@@ -1,11 +1,13 @@
 """
 Pipeline principal de execução: Modelagem e Otimização de Redes de Transporte Urbano.
 Uso:
-  python main.py                  # Roda com grafo sintético (rápido, offline)
-  python main.py --place "Copacabana, Rio de Janeiro, Brazil"   # Roda com dados reais do OpenStreetMap
+  python main.py                                         # Grafo sintético 12x12 (offline)
+  python main.py --place "Copacabana, Rio de Janeiro, Brazil"
+  python main.py --place "Francisco Badaró, Brazil"      # Cidades pequenas (usa fallback=40 km/h)
 """
 
 import argparse
+import pandas as pd
 from src.data_loader import (
     create_synthetic_city,
     load_osm_network,
@@ -14,35 +16,38 @@ from src.data_loader import (
 )
 from src.structural_analysis import compute_structural_metrics, compute_centralities
 from src.optimization import (
-    design_subway_line_mst,
-    compute_city_mst,
-    compute_steiner_network,
+    design_bus_network_mst,
+    design_subway_direct_mst,
     compare_multicriteria_routes,
 )
 from src.robustness import targeted_attack_curve
 from src.visualization import (
     plot_structural_vulnerabilities,
     plot_betweenness_heatmap,
-    plot_optimized_subway,
+    plot_bus_vs_subway,
 )
 
 
 def run_pipeline(place_name: str = None):
-    print("=" * 70)
+    print("=" * 75)
     print("MODELAGEM E OTIMIZAÇÃO DE REDES DE TRANSPORTE URBANO")
-    print("=" * 70)
+    print("=" * 75)
 
     # 1. Carregamento / Geração dos Dados
     if place_name:
         print(f"[1/4] Baixando rede real via OSMnx: {place_name} ...")
-        G = load_osm_network(place_name, save_path="data/raw/city_osm.graphml")
-        regions = assign_spatial_regions(G, num_regions=4)
+        G = load_osm_network(place_name, fallback_speed_kph=40.0, save_path="data/raw/city_osm.graphml")
     else:
-        print("[1/4] Gerando malha urbana sintética (8x6, 4 regiões) ...")
-        G, regions = create_synthetic_city(rows=8, cols=6, num_regions=4, seed=42)
+        print("[1/4] Gerando malha urbana sintética (12x12) ...")
+        G = create_synthetic_city(rows=12, cols=12, seed=42)
+
+    # Divisões espaciais distintas: Metrô (2x2 = 4 regiões) e Ônibus/BRT (3x3 = 9 regiões)
+    subway_regions = assign_spatial_regions(G, grid_rows=2, grid_cols=2, prefix="METRO", attr_name="region_metro")
+    bus_regions = assign_spatial_regions(G, grid_rows=3, grid_cols=3, prefix="BUS", attr_name="region_bus")
 
     export_to_csv(G, "data/processed")
     print(f"      Grafo pronto: {G.number_of_nodes()} vértices | {G.number_of_edges()} arestas")
+    print(f"      Regiões Metrô (2x2): {len(subway_regions)} | Regiões Ônibus (3x3): {len(bus_regions)}")
 
     # 2. Análise Estrutural
     print("\n[2/4] Executando análise estrutural e centralidades ...")
@@ -51,26 +56,36 @@ def run_pipeline(place_name: str = None):
 
     print(f"      Conectado: {metrics['is_connected']} | Pontes: {metrics['num_bridges']} | Pontos de Articulação: {metrics['num_articulation_points']}")
     print(f"      Eficiência Global: {metrics['global_efficiency']} | Distância Média: {metrics['avg_shortest_path_length']} m")
-    print("      Top 3 Gargalos (Betweenness Centrality):")
-    print(cent_df[["node", "region", "betweenness_centrality", "closeness_centrality"]].head(3).to_string(index=False))
 
-    # 3. Otimização de Infraestrutura (Metrô MST vs Árvore de Steiner) e Rotas
-    print("\n[3/4] Otimizando infraestrutura e rotas ...")
-    subway = design_subway_line_mst(G, regions, station_weight="length", infra_weight="cost")
-    terminals = list(subway["stations"].values())
-    steiner = compute_steiner_network(G, terminals, weight="cost")
-    city_mst = compute_city_mst(G, weight="cost", algorithm="kruskal")
+    # 3. Comparação de Modais (Ônibus 3x3 vs Metrô 2x2) e Critérios de Centralidade
+    print("\n[3/4] Comparando critérios de centralidade para Ônibus/BRT (3x3) e Metrô (2x2) ...")
+    comparison_rows = []
+    bus_ecc = None
+    subway_ecc = None
 
-    print(f"      Estações selecionadas por região: {subway['stations']}")
-    print(f"      Linha de Metrô (Prim): Custo = {subway['total_cost']} | Extensão = {subway['total_length']} m | Tempo = {subway['execution_time_s']}s")
-    print(f"      Árvore de Steiner:     Custo = {steiner['total_cost']} | Extensão = {steiner['total_length']} m | Tempo = {steiner['execution_time_s']}s")
-    print(f"      MST da Cidade Inteira: Custo = {city_mst['total_weight']} | Arestas = {city_mst['num_edges']}")
+    for crit in ["eccentricity", "closeness", "betweenness"]:
+        bus_res = design_bus_network_mst(G, bus_regions, criterion=crit)
+        sub_res = design_subway_direct_mst(G, subway_regions, criterion=crit)
+        if crit == "eccentricity":
+            bus_ecc, subway_ecc = bus_res, sub_res
 
-    if len(terminals) >= 2:
-        routes = compare_multicriteria_routes(G, terminals[0], terminals[-1])
-        print(f"\n      Comparação de Rotas ({terminals[0]} -> {terminals[-1]}):")
-        for crit, info in routes.items():
-            print(f"        - Otimizando {crit:11s}: {info['length_m']} m | {info['travel_time_s']} s | Custo {info['cost']}")
+        comparison_rows.append({
+            "modal": "Ônibus/BRT (3x3 - Ruas)",
+            "criterio": crit,
+            "estacoes": len(bus_res["stations"]),
+            "extensao_m": bus_res["total_length"],
+            "custo_estimado": bus_res["total_cost"],
+        })
+        comparison_rows.append({
+            "modal": "Metrô (2x2 - Linha Reta)",
+            "criterio": crit,
+            "estacoes": len(sub_res["stations"]),
+            "extensao_m": sub_res["total_length"],
+            "custo_estimado": sub_res["total_cost"],
+        })
+
+    comp_df = pd.DataFrame(comparison_rows)
+    print(comp_df.to_string(index=False))
 
     # 4. Análise de Robustez e Geração de Gráficos
     print("\n[4/4] Simulando ataques direcionados (robustez) e salvando gráficos ...")
@@ -79,8 +94,8 @@ def run_pipeline(place_name: str = None):
 
     plot_structural_vulnerabilities(G, metrics, save_path="docs/imagens/vulnerabilidades.png")
     plot_betweenness_heatmap(G, cent_df, save_path="docs/imagens/centralidade.png")
-    plot_optimized_subway(G, subway, steiner, save_path="docs/imagens/otimizacao_infra.png")
-    print("\nGráficos salvos em docs/imagens/. Pipeline concluído com sucesso!")
+    plot_bus_vs_subway(G, bus_ecc, subway_ecc, save_path="docs/imagens/onibus_vs_metro.png")
+    print("\nGráficos salvos em docs/imagens/ (incluindo onibus_vs_metro.png). Concluído!")
 
 
 if __name__ == "__main__":
