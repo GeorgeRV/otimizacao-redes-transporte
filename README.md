@@ -1,32 +1,18 @@
-# Modelagem e Otimização de Redes de Transporte Urbano por meio da Teoria dos Grafos
+# Modelagem de Transporte Urbano e Roteamento Multimodal com Restrição de Orçamento
 
 **Autores:** George Rodrigues Vaz e Gerardo Mikael do Carmo Pereira
 
-## Sobre o Projeto
-Este repositório contém a implementação computacional em Python para modelagem, análise estrutural, otimização de infraestrutura e análise de robustez de redes viárias urbanas usando Teoria dos Grafos (`NetworkX` e `OSMnx`).
-
-## Estrutura do Repositório
-- `data/raw/`: Grafos brutos baixados do OpenStreetMap (`.graphml`).
-- `data/processed/`: Nós e arestas processados em `.csv`.
-- `src/`: Código-fonte modular em Python:
-  - `data_loader.py`: Coleta de redes reais via OSMnx ou geração de malhas sintéticas.
-  - `structural_analysis.py`: Conectividade, pontes, pontos de articulação e centralidades.
-  - `optimization.py`: Seleção de estações por centro de subgrafo, Linha de Metrô (Prim/MST), Árvore de Steiner e Dijkstra multi-critério.
-  - `robustness.py`: Simulação de falhas e ataques direcionados a gargalos.
-  - `visualization.py`: Geração de gráficos em alta resolução (300 DPI) para o relatório em LaTeX.
-- `notebooks/`: Cadernos Jupyter passo a passo (`01_coleta_dados`, `02_analise_estrutural`, `03_otimizacao_robustez`).
-- `docs/`: Relatório em LaTeX e imagens exportadas.
+## Estrutura do Projeto
+- `src/data_loader.py`: Coleta de redes reais via OSMnx (`fallback=40 km/h`) ou geração de malha sintética, com particionamento espacial em grids distintos (2×2 para Metrô e 3×3 para Ônibus/BRT).
+- `src/structural_analysis.py`: Diagnóstico estrutural breve da malha viária (conectividade, pontes, pontos de articulação e distância média).
+- `src/optimization.py`: Seleção de estações por **Centralidade de Excentricidade** (equidade espacial) e conexão via **Prim (MST)** — na superfície para Ônibus/BRT e em linha reta para Metrô Subterrâneo.
+- `src/multimodal_routing.py`: Construção do **Grafo Multimodal em Camadas** (a pé, ônibus, metrô e carro/app) e algoritmo **Dijkstra com Restrição de Orçamento**.
+- `src/visualization.py`: Geração de gráficos em 300 DPI prontos para o relatório em LaTeX.
 
 ## Como Executar
-1. Instale as dependências:
-   ```bash
-   pip install -r requirements.txt
-   ```
-2. Execute o pipeline completo com grafo sintético (offline):
-   ```bash
-   python main.py
-   ```
-3. Execute com uma rede viária real do OpenStreetMap:
-   ```bash
-   python main.py --place "Copacabana, Rio de Janeiro, Brazil"
-   ```
+```bash
+pip install -r requirements.txt
+python main.py                                     # Teste rápido offline (malha 12x12)
+python main.py --place "Francisco Badaró, Brazil"  # Cidade pequena
+python main.py --place "Copacabana, Rio de Janeiro, Brazil"
+```
